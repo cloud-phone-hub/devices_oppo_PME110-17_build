@@ -1,0 +1,23 @@
+{
+  "manifest": {
+    "schema": 2,
+    "purpose": "声明 roms/ 下支持的固件与关键镜像。build 条目为构建数据源：main.py --build-id 选中后导出 CDH_* 环境变量驱动各阶段脚本；文件缺失或解析失败时脚本优雅降级为内置默认值。"
+  },
+  "device": {
+    "codename": "PME110",
+    "name": "OPPO Find X9s Pro (PME110)",
+    "board": "OP61C1L1",
+    "soc": "MediaTek"
+  },
+  "build": [
+    {
+      "build-id": "OPPO_FIND_X9s_PRO_PME110_17.0.0.102_CN01",
+      "android-version": "17.0.0",
+      "version": "17.0.0.102.cn01",
+      "security-patch": "2026-09-01",
+      "ota-id": "PME110_11.C.21_1210_202609240710",
+      "factory-zip": "OPPO_FIND_X9s_PRO_PME110_17.0.0.102_CN01.zip",
+      "factory-dir": "OPPO_FIND_X9s_PRO_PME110_17.0.0.102_CN01"
+    }
+  ]
+}
