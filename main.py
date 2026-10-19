@@ -1,35 +1,52 @@
 #!/usr/bin/env python3
-"""PME110-17（OPPO Find X9s Pro，MediaTek / ColorOS V17.0.0 / Android 17）构建全流程编排（main）。
+"""PME110-17（OPPO Find X9s Pro，MediaTek MT6993 / ColorOS V17.0.0 / Android 17）
+构建全流程编排（main）。
 
 按顺序串联 build/scripts/ 下的 python 脚本（与 buildenv.STAGES 一致）：
 
   unpack       -> unpack-roms.py       解 OPPO A/B 全量 OTA（payload.bin）为各分区镜像
+  kernel       -> build-kernel.py      编译内核/模块 + 模块归集（out/dist/kernel/modules）
+  boot         -> build-boot.py        以 lineage boot 为基底 + 注入 first_stage fstab.mt6993
+  vendor_boot  -> build-vendor-boot.py 剔 fragment fstab 副本 + 修正 verifiedbootstate/hardware
+  vendor       -> build-vendor.py      提取依赖 + 编译 vendor HAL + 重打包 vendor.img
+  vendor_dlkm  -> build-vendor_dlkm.py 用内核模块产物打包 vendor_dlkm.img
+  patch        -> build-patch.py       组装 patch.img（ext4，daemon 以 vdc 挂 /mnt/vendor）
+  super        -> pack_super.py        生成 super.img（liblp 动态分区，容纳 OPPO 的 my_* 全集）
+  pack         -> pack-roms.py         组装 vda.img + data.qcow2（最终盘集）
 
-后续阶段（待外部输入就位后逐步补齐，见 README/汇报）：
-  kernel / boot / vendor_boot / vendor / vendor_dlkm / super / pack
+阶段脚本移植自 oriole-16（同为 Android16 lineage-23 派生流水线），设备事实按 OPPO/MTK 适配。
 
 用法（可在任何目录）：
-  python3 build/main.py                    # 全流程（当前仅 unpack）
+  python3 build/main.py                    # 全流程
   python3 build/main.py --only unpack      # 只跑指定阶段
+  python3 build/main.py --from vendor      # 从指定阶段起跑（含）
   python3 build/main.py --dry-run          # 只打印将执行的命令
+  python3 build/main.py --force-pack       # 传给 pack-roms.py --force（强制重建）
   python3 build/main.py --device-info      # 只打印机型 TSV 行（供 just device list）
   python3 build/main.py --build-id ID      # 选择 manifest.json 固件条目（导出 CDH_*）
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 
-BUILD_DIR = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS_DIR = os.path.join(BUILD_DIR, "scripts")
+# pack-roms.py 带连字符无法 import，按路径加载以复用 super 阶段参数（单一数据源）
+_BUILD_DIR = os.path.dirname(os.path.abspath(__file__))
+_SCRIPTS_DIR = os.path.join(_BUILD_DIR, "scripts")
+# pack-roms.py 内部会 import pack_super / buildenv（同级），需把 scripts 目录纳入 sys.path
+sys.path.insert(0, _SCRIPTS_DIR)
 
-_manifest_path = os.path.join(BUILD_DIR, "manifest.json")
+_manifest_path = os.path.join(_BUILD_DIR, "manifest.json")
 
 
 def _load_manifest():
-    """读取 manifest.json（声明 roms/ 下支持的固件与关键镜像），返回 dict。"""
+    """读取 manifest.json（声明 roms/ 下支持的固件与关键镜像），返回 dict。
+
+    仅用于打印设备名与可编译 build-id；文件缺失或解析失败时返回 None 优雅降级。
+    """
     try:
         with open(_manifest_path, encoding="utf-8") as f:
             return json.load(f)
@@ -50,20 +67,27 @@ def _print_device_info(manifest):
 
 
 def _device_info_lines(manifest):
-    """机型 TSV 行（供 just device list 收集），每个 build-id 一行：
+    """机型 TSV 行（供 just device list 收集），每个 build-id 一行机型：
     <vendor>/<device>\\t<显示名>\\t<build-id>
-    """
+    无 build 条目时输出一行空 build-id，保证设备仍可被列出。"""
     dev = manifest.get("device", {}) if manifest else {}
     builds = manifest.get("build", []) if manifest else []
     name = dev.get("name") or dev.get("codename") or "unknown"
-    vendor = os.path.basename(os.path.dirname(os.path.dirname(BUILD_DIR)))
-    device = os.path.basename(os.path.dirname(BUILD_DIR))
-    ids = [b.get("build-id") for b in builds if b.get("build-id")] or [""]
+    vendor = os.path.basename(os.path.dirname(os.path.dirname(_BUILD_DIR)))  # oppo
+    device = os.path.basename(os.path.dirname(_BUILD_DIR))                   # PME110-17
+    ids = [b.get("build-id") for b in builds if b.get("build-id")]
+    if not ids:
+        ids = [""]
     return [f"{vendor}/{device}\t{name}\t{i}" for i in ids]
 
 
 def _select_build(manifest, build_id):
-    """按 --build-id 选择 manifest build 条目，返回 (entry, err)。"""
+    """按 --build-id 选择 manifest build 条目。
+
+    返回 (entry, err)：err 非 None 时致命；entry 为 None 且无 err 表示
+    manifest 无 build 条目或多条目未指定 --build-id（阶段回退内置默认固件）。
+    未指定 --build-id 且恰有一个条目时自动选中。
+    """
     builds = (manifest or {}).get("build", [])
     if build_id:
         for b in builds:
@@ -77,11 +101,16 @@ def _select_build(manifest, build_id):
 
 
 def _export_build_env(entry):
-    """把选中 build 条目导出为 CDH_* 环境变量（各阶段脚本单一数据源）。"""
+    """把选中 build 条目导出为 CDH_* 环境变量。
+
+    各阶段脚本与 vendor/build Go 驱动统一从环境读取固件选择（单一数据源 =
+    manifest.json build 条目），独立运行脚本时各脚本回退内置默认值。
+    """
     build_id = entry.get("build-id", "")
-    dev_root = os.path.dirname(BUILD_DIR)
+    dev_root = os.path.dirname(_BUILD_DIR)                  # devices/oppo/PME110-17
     roms = os.path.join(dev_root, "roms")
-    lineage_rom = os.path.abspath(os.path.join(dev_root, "..", "..", "..", "lineage-rom"))
+    lineage_rom = os.path.abspath(
+        os.path.join(dev_root, "..", "..", "..", "lineage-rom"))
     pairs = {
         "CDH_BUILD_ID": build_id,
         "CDH_VERSION": entry.get("version", ""),
@@ -94,7 +123,7 @@ def _export_build_env(entry):
         "CDH_LINEAGE_DIR": (
             os.path.join(lineage_rom, entry["lineage-dir"]) if entry.get("lineage-dir") else ""),
         "CDH_BASELINES_JSON": (
-            os.path.join(BUILD_DIR, "baselines", f"{build_id}.json") if build_id else ""),
+            os.path.join(_BUILD_DIR, "baselines", f"{build_id}.json") if build_id else ""),
     }
     for k, v in pairs.items():
         if v:
@@ -102,11 +131,32 @@ def _export_build_env(entry):
             print(f"  {k}={v}")
 
 
+_pack_roms_spec = importlib.util.spec_from_file_location(
+    "pack_roms", os.path.join(_BUILD_DIR, "scripts", "pack-roms.py"))
+_pack_roms = importlib.util.module_from_spec(_pack_roms_spec)
+_pack_roms_spec.loader.exec_module(_pack_roms)
+
+# super 阶段参数与 pack-roms.py 保持一致（避免两处映射漂移）
+_SUPER_SIZE = _pack_roms.SUPER_SIZE
+_SUPER_PARTITIONS = _pack_roms.SUPER_PARTITIONS
+_SUPER_IMG = os.path.join(_pack_roms.ROM_DIST, "super.img")
+
 # 阶段：短名 -> (脚本文件名, 追加参数)
-STAGE_SCRIPTS = [
+STAGES = [
     ("unpack", "unpack-roms.py", []),
+    ("kernel", "build-kernel.py", []),
+    ("boot", "build-boot.py", []),
+    ("vendor_boot", "build-vendor-boot.py", []),
+    ("vendor", "build-vendor.py", []),
+    ("vendor_dlkm", "build-vendor_dlkm.py", []),
+    ("patch", "build-patch.py", []),
+    ("super", "pack_super.py",
+     [str(_SUPER_SIZE)]
+     + [f"{n}={p}" for n, p in _SUPER_PARTITIONS]
+     + [_SUPER_IMG]),
+    ("pack", "pack-roms.py", []),
 ]
-STAGE_NAMES = [s[0] for s in STAGE_SCRIPTS]
+STAGE_NAMES = [s[0] for s in STAGES]
 
 
 def _stage_index(name):
@@ -117,9 +167,10 @@ def _stage_index(name):
         sys.exit(2)
 
 
-def _run_script(script, extra, dry_run):
-    path = os.path.join(SCRIPTS_DIR, script)
-    cmd = [sys.executable, path] + extra
+def _run_script(script, args, dry_run):
+    """运行 build/scripts/ 下的脚本；dry_run 时只打印。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", script)
+    cmd = [sys.executable, path] + args
     print("  + " + " ".join(cmd))
     if dry_run:
         return 0
@@ -132,14 +183,18 @@ def _run_script(script, extra, dry_run):
 
 def main():
     ap = argparse.ArgumentParser(description="PME110-17 构建全流程编排")
-    ap.add_argument("--skip-unpack", action="store_true", help="跳过 unpack（已解好时）")
+    ap.add_argument("--skip-unpack", action="store_true", help="跳过 unpack 阶段（源已就位）")
     ap.add_argument("--only", metavar="STAGE", help=f"只跑指定阶段（{', '.join(STAGE_NAMES)}）")
-    ap.add_argument("--from", dest="from_stage", metavar="STAGE", help="从指定阶段起跑（含）")
+    ap.add_argument("--from", dest="from_stage", metavar="STAGE",
+                    help="从指定阶段起跑（含该阶段）")
     ap.add_argument("--dry-run", action="store_true", help="只打印将执行的命令")
+    ap.add_argument("--force-pack", action="store_true", help="pack 阶段加 --force（强制重建）")
     ap.add_argument("--device-info", action="store_true",
-                    help="只打印机型 TSV 行（vendor/device、显示名、build-id）后退出")
+                    help="只打印机型 TSV 行（vendor/device、显示名、build-id）后退出，"
+                         "供 just device list 收集")
     ap.add_argument("--build-id", metavar="ID",
-                    help="选择 manifest.json 中的固件条目，并导出 CDH_* 环境变量驱动各阶段")
+                    help="选择 manifest.json 中的固件条目，并导出 CDH_* 环境变量"
+                         "驱动各阶段（缺省时恰一个条目则自动选中）")
     args = ap.parse_args()
 
     if args.device_info:
@@ -163,22 +218,24 @@ def main():
 
     _print_device_info(manifest)
 
-    stages = list(STAGE_SCRIPTS)
+    stages = list(STAGES)
     if args.skip_unpack:
         stages = [s for s in stages if s[0] != "unpack"]
     if args.only:
-        _stage_index(args.only)
+        _stage_index(args.only)  # 校验阶段名，未知名直接报错退出
         stages = [s for s in stages if s[0] == args.only]
         if not stages:
             print(f"[err] 阶段 {args.only} 已被 --skip-unpack 移除")
             sys.exit(2)
     elif args.from_stage:
-        _stage_index(args.from_stage)
-        names = [s[0] for s in stages]
-        if args.from_stage not in names:
-            print(f"[err] 阶段 {args.from_stage} 已被 --skip-unpack 移除")
-            sys.exit(2)
-        stages = stages[names.index(args.from_stage):]
+        idx = _stage_index(args.from_stage)
+        stages = stages[idx:]
+
+    if args.force_pack:
+        stages = [
+            (n, s, a + ["--force"]) if n == "pack" else (n, s, a)
+            for n, s, a in stages
+        ]
 
     if not stages:
         print("[err] 没有要执行的阶段")

@@ -7,7 +7,8 @@
     "codename": "PME110",
     "name": "OPPO Find X9s Pro (PME110)",
     "board": "OP61C1L1",
-    "soc": "MediaTek"
+    "soc": "MediaTek MT6993",
+    "hardware": "mt6993"
   },
   "build": [
     {
@@ -17,7 +18,10 @@
       "security-patch": "2026-09-01",
       "ota-id": "PME110_11.C.21_1210_202609240710",
       "factory-zip": "OPPO_FIND_X9s_PRO_PME110_17.0.0.102_CN01.zip",
-      "factory-dir": "OPPO_FIND_X9s_PRO_PME110_17.0.0.102_CN01"
+      "factory-dir": "OPPO_FIND_X9s_PRO_PME110_17.0.0.102_CN01",
+      "lineage-zip": "UTM-VM-lineage-23.2-20260922-UNOFFICIAL-virtio_arm64only.zip",
+      "lineage-dir": "lineage-23",
+      "lineage-version": "lineage-23.2"
     }
   ]
 }

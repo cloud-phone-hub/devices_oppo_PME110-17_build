@@ -1,0 +1,121 @@
+# PME110-17 云机 fstab（对真机 OPPO Find X9s Pro /vendor/etc/fstab.mt6993 的云机同步版）。
+#
+# 单一来源：本文件同时被 build-boot.py 读入、注入 boot ramdisk 的 first_stage fstab
+# （/first_stage_ramdisk/fstab.mt6993），并经 vendor patch 树注入
+# /vendor/etc/fstab.mt6993（二阶段 mount_all 读取）。真机同此——boot ramdisk 里的
+# fstab.mt6993 就是 /vendor/etc/fstab.mt6993 的完整副本（真机 ro.hardware=mt6993，
+# 见官方 /vendor/etc/init/hw/init.mt6993.rc）。
+#
+# 与真机的对应关系：
+#   照真机：Super logical 分区全集（system/system_ext/vendor/product/odm/system_dlkm/
+#     vendor_dlkm/odm_dlkm/my_*）、metadata、boot/vendor_boot。
+#   云机特化（真机行在云机不成立或不适用）：
+#     - 去掉真机 logical 行的 avb=/avb_keys= 标记：云机无 vbmeta* 分区，AVB 全程关闭
+#       （boot 日志 "AVB is not enabled, skip verity setup"）。
+#     - /data 在独立 virtio 盘（/dev/block/vdb），非真机 by-name/userdata。
+#     - persist/EFI/firmware 为 vfat（persist 必须 vfat：GRUB grubenv + android_theme 依赖）。
+#     - usb/sr 通配行保留 lineage 原写法。
+#   真机中云机不存在的 MTK 物理分区（preloader_raw/lk/gz/sspm/scp/vcp/tee/spmfw/ccu/
+#     ise/rot_boot_fw/mcupm/dpm/apusys/audio_dsp/connsys_gnss/modem/nvram/proinfo/para/
+#     md_sec/nvdata/nvcfg/protect1/protect2/oplusreserve2/lk1/bootloader2/init_boot/
+#     dtbo/vbmeta*）不引入：云机 vda.gpt 只有 12 个分区
+#     （EFI/super/misc/metadata/cache/boot/recovery/firmware/persist/BIOS/vendor_boot/frp），
+#     这些条目必然挂载失败。
+#
+# 顺序要点（first stage 严格按本文件顺序串行挂载）：
+#   vdc 必须排在最前——vdc（patch.img）提供 /mnt/vendor 挂载点（真机该目录由
+#   first_stage_init 在 /mnt tmpfs 上建好，云机由 patch.img 骨架提供），供内核
+#   getname_flags 重定向 /vendor/X -> /mnt/vendor/X 使用。
+#
+# ⚠ 槽位命名：本文件沿用 CDH 约定的 slotselect，要求 super 内逻辑分区为 **槽位命名
+#   （system_a/vendor_a/...）**（note13/popsicle 同款；pack-roms 的 SUPER_PARTITIONS
+#   即传带 _a 后缀名）。
+
+# 云机特有：patch.img（vdc）= lineage vendor/vendor_dlkm 内容载体（内核 getname_flags
+# 重定向目标：/vendor/X -> /mnt/vendor/X）。
+/dev/block/vdc /mnt/vendor ext4 ro first_stage_mount
+
+# Super logical（云机 vda.super 的逻辑分区；AVB 关闭故无 avb= 标记）
+system /system erofs ro wait,slotselect,logical,first_stage_mount
+system /system ext4 ro wait,slotselect,logical,first_stage_mount
+system_ext /system_ext erofs ro wait,slotselect,logical,first_stage_mount
+system_ext /system_ext ext4 ro wait,slotselect,logical,first_stage_mount
+vendor /vendor erofs ro wait,slotselect,logical,first_stage_mount
+vendor /vendor ext4 ro wait,slotselect,logical,first_stage_mount
+product /product erofs ro wait,slotselect,logical,first_stage_mount
+product /product ext4 ro wait,slotselect,logical,first_stage_mount
+system_dlkm /system_dlkm erofs ro wait,slotselect,logical,first_stage_mount
+system_dlkm /system_dlkm ext4 ro wait,slotselect,logical,first_stage_mount
+vendor_dlkm /vendor_dlkm erofs ro wait,slotselect,logical,first_stage_mount
+vendor_dlkm /vendor_dlkm ext4 ro wait,slotselect,logical,first_stage_mount
+odm /odm erofs ro wait,slotselect,logical,first_stage_mount
+odm /odm ext4 ro wait,slotselect,logical,first_stage_mount
+odm_dlkm /odm_dlkm erofs ro wait,slotselect,logical,first_stage_mount
+odm_dlkm /odm_dlkm ext4 ro wait,slotselect,logical,first_stage_mount
+
+# ColorOS my_*（真机 logical，nofail：缺件不阻塞开机）
+my_product /my_product erofs ro wait,slotselect,logical,first_stage_mount,nofail
+my_product /my_product ext4 ro wait,slotselect,logical,first_stage_mount,nofail
+my_stock /my_stock erofs ro wait,slotselect,logical,first_stage_mount,nofail
+my_stock /my_stock ext4 ro wait,slotselect,logical,first_stage_mount,nofail
+my_engineering /my_engineering erofs ro wait,slotselect,logical,first_stage_mount,nofail
+my_engineering /my_engineering ext4 ro wait,slotselect,logical,first_stage_mount,nofail
+my_heytap /my_heytap erofs ro wait,slotselect,logical,first_stage_mount,nofail
+my_heytap /my_heytap ext4 ro wait,slotselect,logical,first_stage_mount,nofail
+my_carrier /my_carrier erofs ro wait,slotselect,logical,first_stage_mount,nofail
+my_carrier /my_carrier ext4 ro wait,slotselect,logical,first_stage_mount,nofail
+my_region /my_region erofs ro wait,slotselect,logical,first_stage_mount,nofail
+my_region /my_region ext4 ro wait,slotselect,logical,first_stage_mount,nofail
+my_bigball /my_bigball erofs ro wait,slotselect,logical,first_stage_mount,nofail
+my_bigball /my_bigball ext4 ro wait,slotselect,logical,first_stage_mount,nofail
+my_manifest /my_manifest erofs ro wait,slotselect,logical,first_stage_mount,nofail
+my_manifest /my_manifest ext4 ro wait,slotselect,logical,first_stage_mount,nofail
+
+# Metadata（真机基准）
+/dev/block/by-name/metadata /metadata ext4 noatime,nosuid,nodev,discard wait,check,formattable,first_stage_mount
+
+# 云机特有：/data 在独立 virtio 盘（vdb），非真机 by-name/userdata
+/dev/block/vdb /data ext4 nodev,noatime,nosuid,discard latemount,check,quota,formattable,fileencryption,keydirectory=/metadata/vold/metadata_encryption,checkpoint=block
+/dev/block/vdb /data f2fs nodev,noatime,nosuid,discard,reserve_root=32768 latemount,check,quota,formattable,fileencryption,keydirectory=/metadata/vold/metadata_encryption,fscompress,checkpoint=fs
+
+# 云机特有挂载点（真机行在云机不成立：挂载点/文件系统不同）
+/dev/block/by-name/EFI /mnt/vendor/EFI vfat rw,discard,shortname=lower,uid=0,gid=0,dmask=007,fmask=117,context=u:object_r:efi_file:s0 nofail
+# persist 的 context= 必须是 mnt_vendor_file（不是真机 lineage 口径的 persist_file）：
+# 本盘运行态策略 = 官方 plat + CDH vendor 基座，里面没有 persist_file 类型 → 挂载直接
+# `__mount(.../persist,type=vfat)=-1: Permission denied`。而 boot HAL（grub APEX 的
+# vendor.boot-default）起手就要 open(O_CREAT|O_RDWR)
+# /mnt/vendor/persist/grubenv_abootctrl，挂不上就永不 addService → vold 的
+# waitForService 无限重试、引导停在 /data 之前（同 popsicle-16 的实测结论）。
+# 配套的 init/hal_bootctl_default 对 mnt_vendor_file 的授权见 sepolicy.bootctl_persist_cil。
+/dev/block/by-name/persist /mnt/vendor/persist vfat rw,sync,shortname=lower,uid=1000,gid=1000,dmask=007,fmask=117,context=u:object_r:mnt_vendor_file:s0 formattable
+# context 标签必须是策略里真实存在的类型：底包 init.virt.rc 沿用了 Android 13 及
+# 以前的 firmware_file，该类型在 A14+ 平台策略里已被 vendor_firmware_file 取代、
+# 从未声明，security_context_str_to_sid 直接 EINVAL（-22），整行挂载失败。
+# 基座 device/virt/virt-common/sepolicy 为挂载点专门声明了 firmware_mnt_file
+# （init: dir mounton + filesystem mount/relabelfrom，kernel: 目录/文件读），
+# 且 vendor_file_contexts 已映射 /vendor/firmware_mnt(/.*)?，故用该标签。
+/dev/block/by-name/firmware /vendor/firmware_mnt vfat rw,shortname=lower,uid=0,gid=1000,dmask=007,fmask=117,context=u:object_r:firmware_mnt_file:s0 nofail
+share /mnt/vendor/shared virtiofs nosuid,nodev,noatime nofail
+share /mnt/vendor/shared 9p trans=virtio,version=9p2000.L,nosuid,nodev,noatime nofail
+/dev/block/by-name/misc /misc emmc defaults defaults
+/devices/*/block/sr* auto auto defaults voldmanaged=cdrom:auto
+/devices/*/usb* auto auto defaults voldmanaged=usb:auto
+
+# ColorOS 应用 overlay（真机基准；二阶段 mount_all 处理，不进 first stage）。
+# /product/{app,priv-app,lib,lib64} 等多层 lowerdir 让 my_* 分区的应用/库可见。
+overlay-overlay /product/app overlay ro,seclabel,noatime,redirect_dir=nofollow,userxattr,lowerdir=/my_region/app:/my_product/app:/my_heytap/app:/my_stock/app:/my_engineering/app:/product/app overlayfs_remove_missing_lowerdir
+overlay-overlay /product/priv-app overlay ro,seclabel,noatime,redirect_dir=nofollow,userxattr,lowerdir=/my_region/priv-app:/my_product/priv-app:/my_heytap/priv-app:/my_stock/priv-app:/my_engineering/priv-app:/product/priv-app overlayfs_remove_missing_lowerdir
+overlay-overlay /product/lib64 overlay ro,seclabel,noatime,redirect_dir=nofollow,userxattr,lowerdir=/my_region/lib64:/my_product/lib64:/my_heytap/lib64:/my_stock/lib64:/my_engineering/lib64:/product/lib64 overlayfs_remove_missing_lowerdir
+overlay-overlay /product/lib overlay ro,seclabel,noatime,redirect_dir=nofollow,userxattr,lowerdir=/my_region/lib:/my_product/lib:/my_heytap/lib:/my_stock/lib:/my_engineering/lib:/product/lib overlayfs_remove_missing_lowerdir
+overlay-overlay /product/etc/permissions overlay ro,seclabel,noatime,redirect_dir=nofollow,userxattr,lowerdir=/my_product/product_overlay/etc/permissions:/product/etc/permissions overlayfs_remove_missing_lowerdir
+overlay-overlay /product/framework overlay ro,seclabel,noatime,redirect_dir=nofollow,userxattr,lowerdir=/my_product/product_overlay/framework:/product/framework overlayfs_remove_missing_lowerdir
+overlay-overlay /product/media/audio/ui overlay ro,seclabel,noatime,redirect_dir=nofollow,userxattr,lowerdir=/my_product/product_overlay/media/audio/ui:/product/media/audio/ui overlayfs_remove_missing_lowerdir
+overlay-overlay /system_ext/media/audio/ringtones overlay ro,seclabel,noatime,redirect_dir=nofollow,userxattr,lowerdir=/my_product/product_overlay/media/audio/ringtones:/system_ext/media/audio/ringtones overlayfs_remove_missing_lowerdir
+overlay-overlay /system_ext/media/audio/notifications overlay ro,seclabel,noatime,redirect_dir=nofollow,userxattr,lowerdir=/my_product/product_overlay/media/audio/notifications:/system_ext/media/audio/notifications overlayfs_remove_missing_lowerdir
+
+# ZRAM
+/dev/block/zram0 none swap defaults zramsize=50%
+
+# Boot（真机基准）
+/dev/block/by-name/boot /boot emmc defaults first_stage_mount,nofail,slotselect
+/dev/block/by-name/vendor_boot /vendor_boot emmc defaults first_stage_mount,nofail,slotselect
